@@ -39,8 +39,8 @@ async function boot() {
         { id: 'blocks-fill', type: 'fill', source: 'blocks', minzoom: 13, maxzoom: 15, paint: { 'fill-color': stepExpr('v'), 'fill-opacity': ['case', ['boolean', ['feature-state', 'hover'], false], 0.82, 0.55] } },
         { id: 'blocks-line', type: 'line', source: 'blocks', minzoom: 13, maxzoom: 15, paint: { 'line-color': '#1c100c', 'line-width': ['case', ['boolean', ['feature-state', 'hover'], false], 2, 0.35], 'line-opacity': 0.5 } },
         { id: 'ref', type: 'raster', source: 'ref', minzoom: 12 },
-        { id: 'parcels-fill', type: 'fill', source: 'parcels', minzoom: 15, paint: { 'fill-color': stepExpr('PYR_MARKET'), 'fill-opacity': ['case', ['boolean', ['feature-state', 'hover'], false], 0.85, 0.6] } },
-        { id: 'parcels-line', type: 'line', source: 'parcels', minzoom: 15, paint: { 'line-color': '#241009', 'line-width': 0.5 } }
+        { id: 'parcels-fill', type: 'fill', source: 'parcels', minzoom: 15, paint: { 'fill-color': stepExpr('PYR_MARKET'), 'fill-opacity': ['case', ['boolean', ['feature-state', 'a'], false], ['case', ['boolean', ['feature-state', 'hover'], false], 0.85, 0.6], 0], 'fill-opacity-transition': { duration: 450, delay: 0 } } },
+        { id: 'parcels-line', type: 'line', source: 'parcels', minzoom: 15, paint: { 'line-color': '#241009', 'line-width': 0.5, 'line-opacity': ['case', ['boolean', ['feature-state', 'a'], false], 0.9, 0], 'line-opacity-transition': { duration: 450, delay: 0 } } }
       ]
     }
   })
@@ -78,12 +78,21 @@ async function boot() {
   map.on('mouseleave', 'parcels-fill', () => { map.getCanvas().style.cursor = ''; setHov(null, null); hideTip() })
   map.on('click', 'parcels-fill', e => openCard(e.features[0].properties))
 
-  // ---- live parcels (paginated so EVERY parcel in view loads, past the server's 1000/request cap) ----
+  // ---- live parcels: paginated (past the 1000/request cap), cached so loaded parcels stay put, new ones fade in ----
   let pctrl = null, ptimer = null, pseq = 0
-  const PAGE = 1000, MAX_PAGES = 40
+  const PAGE = 1000, MAX_PAGES = 40, CACHE_MAX = 16000
+  const cache = new Map()   // id -> feature; already-loaded parcels persist across pans (no re-pop)
+  const shown = new Set()   // ids that have been faded in
   const FIELDS = 'OBJECTID,TAXID,OWNER1,SITEADDR,PYR_MARKET,PYR_LAND,PYR_BLDG,PYR_TAXABL,PYR_TAXES,PYR_EX,YR_BLT,BASE_SQ_FT,NO_BLDGS,CALC_ACREA,PRICE_S1,SALEDTE_S1,PRICE_S2,SALEDTE_S2,PROP_USE,HOMESTEAD,LEGAL1'
+  function drawCache(newIds) {
+    while (cache.size > CACHE_MAX) { const k = cache.keys().next().value; cache.delete(k); shown.delete(k) }
+    map.getSource('parcels').setData({ type: 'FeatureCollection', features: [...cache.values()] })
+    if (newIds && newIds.length) requestAnimationFrame(() => {
+      for (const id of newIds) if (!shown.has(id)) { shown.add(id); map.setFeatureState({ source: 'parcels', id }, { a: true }) }
+    })
+  }
   async function refreshParcels() {
-    if (map.getZoom() < 15) { map.getSource('parcels').setData({ type: 'FeatureCollection', features: [] }); load.style.display = 'none'; return }
+    if (map.getZoom() < 15) { cache.clear(); shown.clear(); map.getSource('parcels').setData({ type: 'FeatureCollection', features: [] }); load.style.display = 'none'; return }
     const seq = ++pseq
     if (pctrl) pctrl.abort()
     pctrl = new AbortController(); const signal = pctrl.signal
@@ -91,17 +100,25 @@ async function boot() {
     const env = `${b.getWest()},${b.getSouth()},${b.getEast()},${b.getNorth()}`
     const base = `${SVC}/query?where=PYR_MARKET%3E0&geometry=${encodeURIComponent(env)}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=${encodeURIComponent(FIELDS)}&outSR=4326&returnGeometry=true&f=geojson`
     load.style.display = 'block'; load.textContent = 'loading parcels…'
-    const all = []
+    let loaded = 0
     try {
       for (let pg = 0; pg < MAX_PAGES; pg++) {
         const url = `${base}&resultOffset=${pg * PAGE}&resultRecordCount=${PAGE}`
         const gj = await fetch(url, { signal }).then(r => r.json())
-        if (seq !== pseq) return                       // a newer move superseded this fetch
+        if (seq !== pseq) return                        // a newer move superseded this fetch
         const feats = (gj && gj.features) || []
-        for (const f of feats) all.push(f)
-        load.textContent = `loading parcels… ${all.length.toLocaleString()}`
-        map.getSource('parcels').setData({ type: 'FeatureCollection', features: all })  // progressive draw
-        if (feats.length < PAGE) break                 // last page
+        const newIds = []
+        for (const f of feats) {
+          const id = f.id != null ? f.id : (f.properties && f.properties.OBJECTID)
+          if (id == null) continue
+          f.id = id
+          if (!cache.has(id)) newIds.push(id)
+          cache.set(id, f)
+        }
+        loaded += feats.length
+        load.textContent = `loading parcels… ${loaded.toLocaleString()}`
+        drawCache(newIds)                                // progressive: existing stay, new fade in
+        if (feats.length < PAGE) break                   // last page
       }
       if (seq === pseq) load.style.display = 'none'
     } catch (e) { if (seq === pseq) load.style.display = 'none' }

@@ -29,7 +29,7 @@ a{color:var(--garnet2)}
   border-radius:999px;padding:6px 12px;font-size:12px;cursor:pointer;white-space:nowrap}
 .chip:hover,.chip.on{border-color:var(--gold);color:var(--gold2)}
 
-#legend{position:fixed;left:14px;bottom:16px;z-index:5;background:var(--panel);border:1px solid var(--line);
+#legend{position:fixed;left:14px;top:104px;z-index:5;background:var(--panel);border:1px solid var(--line);
   border-radius:9px;padding:9px 11px;font-size:11px;max-width:180px}
 #legend .t{color:var(--gold2);font-weight:700;font-size:11px;margin-bottom:5px}
 #legend .r{display:flex;align-items:center;gap:7px;margin:2px 0;color:var(--dim)}
@@ -89,7 +89,7 @@ a{color:var(--garnet2)}
 @media(max-width:560px){
   #brand .s{display:none}
   #stats .st:nth-child(n+3){display:none}
-  #legend{font-size:10px;max-width:150px}
+  #legend{font-size:10px;max-width:150px;top:96px;left:8px}
   #card{left:8px;right:8px;width:auto;bottom:10px}
   #hud{top:98px}
 }
