@@ -78,18 +78,35 @@ async function boot() {
   map.on('mouseleave', 'parcels-fill', () => { map.getCanvas().style.cursor = ''; setHov(null, null); hideTip() })
   map.on('click', 'parcels-fill', e => openCard(e.features[0].properties))
 
-  // ---- live parcels ----
-  let pctrl = null, ptimer = null
+  // ---- live parcels (paginated so EVERY parcel in view loads, past the server's 1000/request cap) ----
+  let pctrl = null, ptimer = null, pseq = 0
+  const PAGE = 1000, MAX_PAGES = 40
   const FIELDS = 'OBJECTID,TAXID,OWNER1,SITEADDR,PYR_MARKET,PYR_LAND,PYR_BLDG,PYR_TAXABL,PYR_TAXES,PYR_EX,YR_BLT,BASE_SQ_FT,NO_BLDGS,CALC_ACREA,PRICE_S1,SALEDTE_S1,PRICE_S2,SALEDTE_S2,PROP_USE,HOMESTEAD,LEGAL1'
-  function refreshParcels() {
-    if (map.getZoom() < 15) { map.getSource('parcels').setData({ type: 'FeatureCollection', features: [] }); return }
+  async function refreshParcels() {
+    if (map.getZoom() < 15) { map.getSource('parcels').setData({ type: 'FeatureCollection', features: [] }); load.style.display = 'none'; return }
+    const seq = ++pseq
+    if (pctrl) pctrl.abort()
+    pctrl = new AbortController(); const signal = pctrl.signal
     const b = map.getBounds()
     const env = `${b.getWest()},${b.getSouth()},${b.getEast()},${b.getNorth()}`
-    const url = `${SVC}/query?where=PYR_MARKET%3E0&geometry=${encodeURIComponent(env)}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=${encodeURIComponent(FIELDS)}&outSR=4326&returnGeometry=true&resultRecordCount=1000&f=geojson`
-    if (pctrl) pctrl.abort(); pctrl = new AbortController(); load.style.display = 'block'
-    fetch(url, { signal: pctrl.signal }).then(r => r.json()).then(gj => { if (gj && gj.features) map.getSource('parcels').setData(gj); load.style.display = 'none' }).catch(() => { load.style.display = 'none' })
+    const base = `${SVC}/query?where=PYR_MARKET%3E0&geometry=${encodeURIComponent(env)}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=${encodeURIComponent(FIELDS)}&outSR=4326&returnGeometry=true&f=geojson`
+    load.style.display = 'block'; load.textContent = 'loading parcels…'
+    const all = []
+    try {
+      for (let pg = 0; pg < MAX_PAGES; pg++) {
+        const url = `${base}&resultOffset=${pg * PAGE}&resultRecordCount=${PAGE}`
+        const gj = await fetch(url, { signal }).then(r => r.json())
+        if (seq !== pseq) return                       // a newer move superseded this fetch
+        const feats = (gj && gj.features) || []
+        for (const f of feats) all.push(f)
+        load.textContent = `loading parcels… ${all.length.toLocaleString()}`
+        map.getSource('parcels').setData({ type: 'FeatureCollection', features: all })  // progressive draw
+        if (feats.length < PAGE) break                 // last page
+      }
+      if (seq === pseq) load.style.display = 'none'
+    } catch (e) { if (seq === pseq) load.style.display = 'none' }
   }
-  map.on('moveend', () => { clearTimeout(ptimer); ptimer = setTimeout(refreshParcels, 220) })
+  map.on('moveend', () => { clearTimeout(ptimer); ptimer = setTimeout(refreshParcels, 250) })
   const updHud = () => { const z = map.getZoom(); hud.innerHTML = z >= 15 ? 'live lot lines · <b style="color:var(--gold2)">tap a parcel</b>' : (z >= 13 ? 'census blocks · hover for Σ value · tap to zoom' : 'block groups · hover for Σ value · tap to zoom') }
   map.on('zoom', updHud)
 
