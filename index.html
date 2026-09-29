@@ -1,0 +1,51 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1" />
+  <title>Leon County Value</title>
+  <meta name="description" content="Every taxable lot in Leon County, Florida, mapped by market value — value zones countywide, live lot lines with owner, taxes and sales on zoom-in. Data from the Leon County Property Appraiser." />
+  <meta property="og:title" content="Leon County Value" />
+  <meta property="og:description" content="Leon County, Florida property values, mapped. $43B across 112,000 parcels." />
+  <meta property="og:type" content="website" />
+  <meta name="theme-color" content="#0d0908" />
+</head>
+<body>
+  <div id="map"></div>
+
+  <div id="top"><div class="bar">
+    <div id="brand">
+      <h1>Leon County <b>by Value</b></h1>
+      <div class="s">Every taxable lot in Leon County, colored by <b>market value</b>. Zoom out for value zones (each block = the parcels inside it); zoom in for live lot lines with owner, taxes &amp; sales — read straight from the county's <span class="mono">intervector</span> parcel server.</div>
+    </div>
+    <div id="stats"></div>
+  </div></div>
+
+  <div id="chips"></div>
+
+  <button id="sideToggle">★ Priciest ▸</button>
+  <div id="side">
+    <button id="sideClose">×</button>
+    <div class="hd"><button data-t="homes" class="on">Priciest homes</button><button data-t="top">Most valuable</button></div>
+    <div class="body" id="sideBody"></div>
+  </div>
+
+  <div id="legend"></div>
+  <div id="hud"></div>
+  <div id="load">loading parcels…</div>
+  <div id="ztip"></div>
+
+  <div id="card">
+    <button class="x">×</button>
+    <div class="jvl">market value</div>
+    <div class="jv" id="cJv"></div>
+    <div class="ad" id="cAd"></div>
+    <div class="own" id="cOwn"></div>
+    <span class="use" id="cUse"></span>
+    <div class="grid" id="cGrid"></div>
+    <div class="legal" id="cLegal"></div>
+  </div>
+
+  <script type="module" src="/src/main.js"></script>
+</body>
+</html>
