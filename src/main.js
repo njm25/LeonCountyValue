@@ -30,7 +30,8 @@ async function boot() {
         ref: { type: 'raster', tiles: ['https://server.arcgisonline.com/ArcGIS/rest/services/Reference/World_Transportation/MapServer/tile/{z}/{y}/{x}'], tileSize: 256 },
         groups: { type: 'geojson', data: ZGROUPS, generateId: true },
         blocks: { type: 'geojson', data: ZBLOCKS, generateId: true },
-        parcels: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } }
+        parcels: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } },
+        parcels_in: { type: 'geojson', data: { type: 'FeatureCollection', features: [] } }
       },
       layers: [
         { id: 'sat', type: 'raster', source: 'sat' },
@@ -39,8 +40,10 @@ async function boot() {
         { id: 'blocks-fill', type: 'fill', source: 'blocks', minzoom: 13, maxzoom: 15, paint: { 'fill-color': stepExpr('v'), 'fill-opacity': ['case', ['boolean', ['feature-state', 'hover'], false], 0.82, 0.55] } },
         { id: 'blocks-line', type: 'line', source: 'blocks', minzoom: 13, maxzoom: 15, paint: { 'line-color': '#1c100c', 'line-width': ['case', ['boolean', ['feature-state', 'hover'], false], 2, 0.35], 'line-opacity': 0.5 } },
         { id: 'ref', type: 'raster', source: 'ref', minzoom: 12 },
-        { id: 'parcels-fill', type: 'fill', source: 'parcels', minzoom: 15, paint: { 'fill-color': stepExpr('PYR_MARKET'), 'fill-opacity': ['case', ['boolean', ['feature-state', 'a'], false], ['case', ['boolean', ['feature-state', 'hover'], false], 0.85, 0.6], 0], 'fill-opacity-transition': { duration: 450, delay: 0 } } },
-        { id: 'parcels-line', type: 'line', source: 'parcels', minzoom: 15, paint: { 'line-color': '#241009', 'line-width': 0.5, 'line-opacity': ['case', ['boolean', ['feature-state', 'a'], false], 0.9, 0], 'line-opacity-transition': { duration: 450, delay: 0 } } }
+        { id: 'parcels-fill', type: 'fill', source: 'parcels', minzoom: 15, paint: { 'fill-color': stepExpr('PYR_MARKET'), 'fill-opacity': ['case', ['boolean', ['feature-state', 'hover'], false], 0.85, 0.6] } },
+        { id: 'parcels-line', type: 'line', source: 'parcels', minzoom: 15, paint: { 'line-color': '#241009', 'line-width': 0.5, 'line-opacity': 0.9 } },
+        { id: 'parcels_in-fill', type: 'fill', source: 'parcels_in', minzoom: 15, paint: { 'fill-color': stepExpr('PYR_MARKET'), 'fill-opacity': 0, 'fill-opacity-transition': { duration: 450, delay: 0 } } },
+        { id: 'parcels_in-line', type: 'line', source: 'parcels_in', minzoom: 15, paint: { 'line-color': '#241009', 'line-width': 0.5, 'line-opacity': 0, 'line-opacity-transition': { duration: 450, delay: 0 } } }
       ]
     }
   })
@@ -78,49 +81,67 @@ async function boot() {
   map.on('mouseleave', 'parcels-fill', () => { map.getCanvas().style.cursor = ''; setHov(null, null); hideTip() })
   map.on('click', 'parcels-fill', e => openCard(e.features[0].properties))
 
-  // ---- live parcels: paginated (past the 1000/request cap), cached so loaded parcels stay put, new ones fade in ----
+  // ---- live parcels: paginated (past the 1000/request cap) + cached so loaded ones stay put;
+  //      newly-appearing parcels cross-fade in via a transient "incoming" layer (setPaintProperty animates, feature-state does not) ----
   let pctrl = null, ptimer = null, pseq = 0
-  const PAGE = 1000, MAX_PAGES = 40, CACHE_MAX = 16000
-  const cache = new Map()   // id -> feature; already-loaded parcels persist across pans (no re-pop)
-  const shown = new Set()   // ids that have been faded in
+  const PAGE = 1000, MAX_PAGES = 40, CACHE_MAX = 16000, PFILL = 0.6, PLINE = 0.9, FADE = 480
+  const cache = new Map()   // id -> feature; already-shown parcels (stable layer)
+  let incoming = []         // features currently fading in
+  let fadeTimer = null
   const FIELDS = 'OBJECTID,TAXID,OWNER1,SITEADDR,PYR_MARKET,PYR_LAND,PYR_BLDG,PYR_TAXABL,PYR_TAXES,PYR_EX,YR_BLT,BASE_SQ_FT,NO_BLDGS,CALC_ACREA,PRICE_S1,SALEDTE_S1,PRICE_S2,SALEDTE_S2,PROP_USE,HOMESTEAD,LEGAL1'
-  function drawCache(newIds) {
-    while (cache.size > CACHE_MAX) { const k = cache.keys().next().value; cache.delete(k); shown.delete(k) }
+  const EMPTY = { type: 'FeatureCollection', features: [] }
+  const drawStable = () => {
+    while (cache.size > CACHE_MAX) cache.delete(cache.keys().next().value)
     map.getSource('parcels').setData({ type: 'FeatureCollection', features: [...cache.values()] })
-    if (newIds && newIds.length) requestAnimationFrame(() => {
-      for (const id of newIds) if (!shown.has(id)) { shown.add(id); map.setFeatureState({ source: 'parcels', id }, { a: true }) }
-    })
+  }
+  function commitIncoming() {                 // fade done (or interrupted): fold the batch into the stable layer
+    if (fadeTimer) { clearTimeout(fadeTimer); fadeTimer = null }
+    if (incoming.length) { for (const f of incoming) cache.set(f.id, f); incoming = []; drawStable() }
+    map.getSource('parcels_in').setData(EMPTY)
+    map.setPaintProperty('parcels_in-fill', 'fill-opacity', 0)
+    map.setPaintProperty('parcels_in-line', 'line-opacity', 0)
+  }
+  function fadeInBatch(newF) {
+    commitIncoming()                          // finish any prior fade first
+    incoming = newF
+    map.getSource('parcels_in').setData({ type: 'FeatureCollection', features: newF })
+    requestAnimationFrame(() => requestAnimationFrame(() => {   // let opacity:0 paint first, then animate up
+      map.setPaintProperty('parcels_in-fill', 'fill-opacity', PFILL)
+      map.setPaintProperty('parcels_in-line', 'line-opacity', PLINE)
+    }))
+    fadeTimer = setTimeout(commitIncoming, FADE + 80)
   }
   async function refreshParcels() {
-    if (map.getZoom() < 15) { cache.clear(); shown.clear(); map.getSource('parcels').setData({ type: 'FeatureCollection', features: [] }); load.style.display = 'none'; return }
+    if (map.getZoom() < 15) { commitIncoming(); cache.clear(); map.getSource('parcels').setData(EMPTY); load.style.display = 'none'; return }
     const seq = ++pseq
     if (pctrl) pctrl.abort()
     pctrl = new AbortController(); const signal = pctrl.signal
+    commitIncoming()
     const b = map.getBounds()
     const env = `${b.getWest()},${b.getSouth()},${b.getEast()},${b.getNorth()}`
     const base = `${SVC}/query?where=PYR_MARKET%3E0&geometry=${encodeURIComponent(env)}&geometryType=esriGeometryEnvelope&inSR=4326&spatialRel=esriSpatialRelIntersects&outFields=${encodeURIComponent(FIELDS)}&outSR=4326&returnGeometry=true&f=geojson`
     load.style.display = 'block'; load.textContent = 'loading parcels…'
     let loaded = 0
+    const pending = []                        // brand-new parcels gathered across all pages
     try {
       for (let pg = 0; pg < MAX_PAGES; pg++) {
         const url = `${base}&resultOffset=${pg * PAGE}&resultRecordCount=${PAGE}`
         const gj = await fetch(url, { signal }).then(r => r.json())
-        if (seq !== pseq) return                        // a newer move superseded this fetch
+        if (seq !== pseq) return              // superseded by a newer move
         const feats = (gj && gj.features) || []
-        const newIds = []
         for (const f of feats) {
           const id = f.id != null ? f.id : (f.properties && f.properties.OBJECTID)
           if (id == null) continue
           f.id = id
-          if (!cache.has(id)) newIds.push(id)
-          cache.set(id, f)
+          if (!cache.has(id)) pending.push(f)
         }
         loaded += feats.length
         load.textContent = `loading parcels… ${loaded.toLocaleString()}`
-        drawCache(newIds)                                // progressive: existing stay, new fade in
-        if (feats.length < PAGE) break                   // last page
+        if (feats.length < PAGE) break        // last page
       }
-      if (seq === pseq) load.style.display = 'none'
+      if (seq !== pseq) return
+      if (pending.length) fadeInBatch(pending)  // one clean fade of everything new; cached parcels stayed put throughout
+      load.style.display = 'none'
     } catch (e) { if (seq === pseq) load.style.display = 'none' }
   }
   map.on('moveend', () => { clearTimeout(ptimer); ptimer = setTimeout(refreshParcels, 250) })
